@@ -1,0 +1,99 @@
+name: assessment-practice
+
+services:
+  app:
+    build:
+      context: .
+      target: runner
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/app
+      SESSION_SECRET: ${SESSION_SECRET}
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "3000"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "0.75"
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: app
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 640m
+          cpus: "0.75"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+          cpus: "0.25"
+
+  # One-off tooling — not started by `docker compose up`.
+  # Run migrations:  docker compose --profile tools run --rm migrate
+  # Seed the DB:      docker compose --profile tools run --rm seed
+  migrate:
+    build:
+      context: .
+      target: builder
+    profiles: ["tools"]
+    environment:
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["npx", "drizzle-kit", "migrate"]
+
+  seed:
+    build:
+      context: .
+      target: builder
+    profiles: ["tools"]
+    environment:
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD}@postgres:5432/app
+      BOOTSTRAP_EMAIL: ${BOOTSTRAP_EMAIL:-me@example.com}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["npx", "tsx", "scripts/seed.ts"]
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:
