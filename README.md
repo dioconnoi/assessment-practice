@@ -7,9 +7,9 @@ and SQL challenges. Formats are config-driven templates, not tied to any one
 employer; content is written to match the *style and difficulty* of real
 assessments, never reproduce them.
 
-**Status: situational judgement and personality questionnaires, end to
-end.** The other three test types (reasoning, coding, SQL) are future
-phases; see "What's not built yet" below.
+**Status: situational judgement, personality questionnaires, and
+numerical/verbal reasoning, end to end.** Coding and SQL challenges are the
+remaining two; see "What's not built yet" below.
 
 ## Stack
 
@@ -79,12 +79,18 @@ access.
   feedback_type`, since it summarizes the whole trait profile, not one
   question) — both via DB-level unique constraints, so reopening the
   results page never re-calls the API either way.
-- **Scoring now has a thin dispatcher** (`lib/attempts/finalize.ts`),
-  branching on `attempts.testType` — SJT and personality each get their own
-  pure scorer (`lib/scoring/sjtScorer.ts`, `lib/scoring/personalityScorer.ts`)
-  with no shared interface/registry, since the remaining types (reasoning,
-  coding, SQL) will likely need different-enough lifecycles that a forced
-  common shape would be premature.
+- **Scoring has a thin dispatcher** (`lib/attempts/finalize.ts`), a `switch`
+  on `attempts.testType` with a throwing default (so a future `coding`/`sql`
+  attempt fails loudly instead of silently scoring as SJT). Each type gets
+  its own pure scorer (`sjtScorer.ts`, `personalityScorer.ts`,
+  `reasoningScorer.ts`) — still no shared interface/registry. Reasoning is
+  the first real test of that choice: it produces the same
+  `{isCorrect, pointsAwarded, maxPoints}` shape as SJT, but that's
+  coincidence (flat correct/incorrect vs. points-per-option), not a shared
+  contract, so it stayed separate rather than forcing a shared scorer
+  signature around two different join shapes. Coding/SQL landing — async
+  execution, partial test-case credit — is the point to revisit this with
+  actual data instead of a guess.
 - **Personality attempts have no `totalScore`/`maxScore`** — they stay
   `null` rather than holding a completion ratio, because the type
   deliberately has no "correct answer" concept; the real output is the
@@ -110,10 +116,21 @@ access.
   module unbundleable into a client component.
 - **Next.js 16 renamed `middleware.ts` to `proxy.ts`** (same mechanism, new
   name) — the auth gate lives in `proxy.ts` at the repo root.
+- **Reasoning passages are inlined per-question, not deduplicated on the
+  wire** — several questions can share a `reasoning_passages` row, but each
+  question's API response carries its own full copy of the passage. Simpler
+  than a separate lookup map, and correct regardless of ordinal order
+  (shared-passage questions aren't guaranteed to land adjacent after random
+  selection). A real bug this caught on the way in: checking `passageBody`
+  truthiness to decide "does this question have a passage" breaks for
+  numerical passages, which store their content in `dataTable` and leave
+  `body` as `""` — an empty string is falsy in JS, so that check silently
+  dropped every numerical passage. Fixed by checking the actual FK
+  (`passageId !== null`) instead of inferring presence from content.
 
 ## What's not built yet
 
-Per the agreed build order: numerical/verbal reasoning, the Gemini + Groq
-free-tier LLM providers (behind the existing `LLMProvider` interface),
-self-hosted Judge0 for coding + SQL challenges, and progress-dashboard
-polish beyond a plain attempt history table.
+Per the agreed build order: the Gemini + Groq free-tier LLM providers
+(behind the existing `LLMProvider` interface), self-hosted Judge0 for
+coding + SQL challenges, and progress-dashboard polish beyond a plain
+attempt history table.

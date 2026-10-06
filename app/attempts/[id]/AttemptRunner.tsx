@@ -32,7 +32,23 @@ interface ForcedChoiceQuestionView extends BaseQuestion {
   response: { kind: "forced_choice"; mostLikeId?: string; leastLikeId?: string } | null;
 }
 
-type AttemptQuestionView = SjtQuestionView | LikertQuestionView | ForcedChoiceQuestionView;
+interface ReasoningQuestionView extends BaseQuestion {
+  format: "reasoning";
+  stem: string;
+  passage: {
+    title: string | null;
+    body: string;
+    dataTable: { caption?: string; columns: string[]; rows: (string | number)[][] } | null;
+  } | null;
+  options: { id: string; text: string }[];
+  response: { selectedOptionId: string } | null;
+}
+
+type AttemptQuestionView =
+  | SjtQuestionView
+  | LikertQuestionView
+  | ForcedChoiceQuestionView
+  | ReasoningQuestionView;
 
 interface AttemptData {
   id: number;
@@ -122,6 +138,12 @@ export default function AttemptRunner({ attemptId }: { attemptId: number }) {
     postAnswer(current.questionId, { selectedOptionId: optionId });
   }
 
+  function selectReasoningOption(optionId: string) {
+    if (!current) return;
+    updateCurrent({ selectedOptionId: optionId });
+    postAnswer(current.questionId, { selectedOptionId: optionId });
+  }
+
   function selectLikert(value: number) {
     if (!current) return;
     updateCurrent({ kind: "likert", value });
@@ -152,7 +174,8 @@ export default function AttemptRunner({ attemptId }: { attemptId: number }) {
   useEffect(() => {
     function flush() {
       if (!current?.response) return;
-      if (current.format === "sjt") postAnswer(current.questionId, current.response);
+      if (current.format === "sjt" || current.format === "reasoning")
+        postAnswer(current.questionId, current.response);
       else if (current.format === "likert") postAnswer(current.questionId, { value: current.response.value });
       else
         postAnswer(current.questionId, {
@@ -286,6 +309,63 @@ export default function AttemptRunner({ attemptId }: { attemptId: number }) {
                     </button>
                   </div>
                 </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {current.format === "reasoning" && (
+        <>
+          {current.passage && (
+            <div className="rounded-lg border border-black/10 p-3 dark:border-white/10">
+              {current.passage.title && (
+                <p className="mb-1 text-sm font-medium">{current.passage.title}</p>
+              )}
+              {current.passage.dataTable ? (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr>
+                      {current.passage.dataTable.columns.map((c) => (
+                        <th key={c} className="text-left font-medium text-zinc-500">
+                          {c}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {current.passage.dataTable.rows.map((r, i) => (
+                      <tr key={i}>
+                        {r.map((cell, j) => (
+                          <td key={j}>{cell}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">
+                  {current.passage.body}
+                </p>
+              )}
+            </div>
+          )}
+          <p className="text-base leading-relaxed">{current.stem}</p>
+          <div className="flex flex-col gap-2">
+            {current.options.map((option) => {
+              const selected = current.response?.selectedOptionId === option.id;
+              return (
+                <button
+                  key={option.id}
+                  onClick={() => selectReasoningOption(option.id)}
+                  className={`rounded-lg border p-3 text-left text-sm ${
+                    selected
+                      ? "border-black bg-black/5 dark:border-white dark:bg-white/10"
+                      : "border-black/10 dark:border-white/10"
+                  }`}
+                >
+                  {option.text}
+                </button>
               );
             })}
           </div>

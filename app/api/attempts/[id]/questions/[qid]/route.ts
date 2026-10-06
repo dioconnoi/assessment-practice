@@ -2,7 +2,13 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { attempts, attemptQuestions, type SjtResponse, type PersonalityResponse } from "@/lib/db/schema";
+import {
+  attempts,
+  attemptQuestions,
+  type SjtResponse,
+  type PersonalityResponse,
+  type ReasoningResponse,
+} from "@/lib/db/schema";
 import { getUserId } from "@/lib/auth/session";
 import { finalizeIfExpired } from "@/lib/attempts/finalize";
 
@@ -21,6 +27,11 @@ const personalityBodySchema = z
   .refine((b) => b.value !== undefined || b.mostLikeId !== undefined || b.leastLikeId !== undefined, {
     message: "At least one of value, mostLikeId, or leastLikeId is required",
   });
+
+const reasoningBodySchema = z.object({
+  selectedOptionId: z.string(),
+  timeSpentMs: z.number().int().min(0).optional(),
+});
 
 export async function PATCH(
   request: Request,
@@ -44,7 +55,7 @@ export async function PATCH(
   }
 
   const body = await request.json().catch(() => null);
-  let response: SjtResponse | PersonalityResponse;
+  let response: SjtResponse | PersonalityResponse | ReasoningResponse;
   let timeSpentMs: number | undefined;
 
   if (attempt.testType === "personality") {
@@ -61,6 +72,13 @@ export async function PATCH(
             mostLikeId: parsed.data.mostLikeId,
             leastLikeId: parsed.data.leastLikeId,
           };
+  } else if (attempt.testType === "numerical_reasoning" || attempt.testType === "verbal_reasoning") {
+    const parsed = reasoningBodySchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    }
+    timeSpentMs = parsed.data.timeSpentMs;
+    response = { selectedOptionId: parsed.data.selectedOptionId };
   } else {
     const parsed = sjtBodySchema.safeParse(body);
     if (!parsed.success) {

@@ -85,6 +85,21 @@ export interface ForcedChoiceResponse {
 
 export type PersonalityResponse = LikertResponse | ForcedChoiceResponse;
 
+export interface ReasoningDataTable {
+  caption?: string;
+  columns: string[];
+  rows: (string | number)[][];
+}
+
+export interface ReasoningOption {
+  id: string;
+  text: string;
+}
+
+export interface ReasoningResponse {
+  selectedOptionId: string;
+}
+
 // --- tables ---
 
 export const users = pgTable("users", {
@@ -166,6 +181,36 @@ export const personalityBlocks = pgTable("personality_blocks", {
   statements: jsonb("statements").notNull().$type<ForcedChoiceStatement[]>(),
 });
 
+// Shared across several reasoning_questions — not 1:1 like SJT/personality.
+export const reasoningPassages = pgTable("reasoning_passages", {
+  id: serial("id").primaryKey(),
+  testType: testTypeEnum("test_type").notNull(),
+  title: varchar("title", { length: 200 }),
+  body: text("body").notNull(),
+  // null for verbal passages, which have no data table
+  dataTable: jsonb("data_table").$type<ReasoningDataTable>(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// 1:1 child table for reasoning questions. No numerical/verbal discriminant
+// column here — questions.testType already carries that, same convention
+// as every other child table.
+export const reasoningQuestions = pgTable("reasoning_questions", {
+  questionId: integer("question_id")
+    .primaryKey()
+    .references(() => questions.id, { onDelete: "cascade" }),
+  // nullable — not every question needs shared context
+  passageId: integer("passage_id").references(() => reasoningPassages.id, {
+    onDelete: "cascade",
+  }),
+  options: jsonb("options").notNull().$type<ReasoningOption[]>(),
+  correctOptionId: varchar("correct_option_id", { length: 50 }).notNull(),
+  // static, author-written — no LLM involved anywhere in this test type
+  explanation: text("explanation").notNull(),
+});
+
 // Attempt-level trait profile snapshot — not per-question, since a trait
 // pools contributions from several items/statements across the attempt.
 export const traitScores = pgTable(
@@ -232,7 +277,7 @@ export const attemptQuestions = pgTable(
     ordinal: integer("ordinal").notNull(),
     firstViewedAt: timestamp("first_viewed_at", { withTimezone: true }),
     timeSpentMs: integer("time_spent_ms").notNull().default(0),
-    response: jsonb("response").$type<SjtResponse | PersonalityResponse>(),
+    response: jsonb("response").$type<SjtResponse | PersonalityResponse | ReasoningResponse>(),
     isCorrect: boolean("is_correct"),
     pointsAwarded: numeric("points_awarded", { precision: 10, scale: 2 }),
   },

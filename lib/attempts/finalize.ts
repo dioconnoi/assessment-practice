@@ -9,12 +9,16 @@ import {
   personalityItems,
   personalityBlocks,
   traitScores,
+  reasoningQuestions,
+  testTypeEnum,
   type SjtOption,
   type SjtResponse,
   type PersonalityResponse,
+  type ReasoningResponse,
 } from "@/lib/db/schema";
 import { scoreSjtQuestion } from "@/lib/scoring/sjtScorer";
 import { scorePersonalityItem, type PersonalityItemData } from "@/lib/scoring/personalityScorer";
+import { scoreReasoningQuestion } from "@/lib/scoring/reasoningScorer";
 import { isExpired } from "@/lib/session/timer";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -37,10 +41,11 @@ export async function finalizeAttempt(
   if (!attempt) return;
 
   await db.transaction(async (tx) => {
-    const { totalScore, maxScore } =
-      attempt.testType === "personality"
-        ? await finalizePersonalityRows(tx, attemptId)
-        : await finalizeSjtRows(tx, attemptId);
+    const { totalScore, maxScore } = await finalizeRowsForType(
+      tx,
+      attemptId,
+      attempt.testType,
+    );
 
     await tx
       .update(attempts)
@@ -52,6 +57,30 @@ export async function finalizeAttempt(
       })
       .where(and(eq(attempts.id, attemptId), eq(attempts.status, "in_progress")));
   });
+}
+
+type TestType = (typeof testTypeEnum.enumValues)[number];
+
+/** Picks the right scorer by test type. A throwing default (rather than a
+ * silent fallback to one of the branches) means a coding/sql attempt fails
+ * loudly once those types start being used, instead of being mis-scored
+ * as SJT. */
+function finalizeRowsForType(
+  tx: Tx,
+  attemptId: number,
+  testType: TestType,
+): Promise<{ totalScore: number | null; maxScore: number | null }> {
+  switch (testType) {
+    case "personality":
+      return finalizePersonalityRows(tx, attemptId);
+    case "sjt":
+      return finalizeSjtRows(tx, attemptId);
+    case "numerical_reasoning":
+    case "verbal_reasoning":
+      return finalizeReasoningRows(tx, attemptId);
+    default:
+      throw new Error(`finalizeAttempt: no finalizer for testType ${testType}`);
+  }
 }
 
 async function finalizeSjtRows(
@@ -154,6 +183,42 @@ async function finalizePersonalityRows(
   }
 
   return { totalScore: null, maxScore: null };
+}
+
+/** Reasoning scoring never needs reasoning_passages — passage content is
+ * irrelevant to whether the selected option matches the correct one. */
+async function finalizeReasoningRows(
+  tx: Tx,
+  attemptId: number,
+): Promise<{ totalScore: number; maxScore: number }> {
+  const rows = await tx
+    .select({
+      attemptQuestionId: attemptQuestions.id,
+      response: attemptQuestions.response,
+      correctOptionId: reasoningQuestions.correctOptionId,
+    })
+    .from(attemptQuestions)
+    .innerJoin(questions, eq(attemptQuestions.questionId, questions.id))
+    .innerJoin(reasoningQuestions, eq(reasoningQuestions.questionId, questions.id))
+    .where(eq(attemptQuestions.attemptId, attemptId));
+
+  let totalScore = 0;
+  let maxScore = 0;
+
+  for (const row of rows) {
+    const result = scoreReasoningQuestion(
+      row.correctOptionId,
+      row.response as ReasoningResponse | null,
+    );
+    totalScore += result.pointsAwarded;
+    maxScore += result.maxPoints;
+    await tx
+      .update(attemptQuestions)
+      .set({ isCorrect: result.isCorrect, pointsAwarded: String(result.pointsAwarded) })
+      .where(eq(attemptQuestions.id, row.attemptQuestionId));
+  }
+
+  return { totalScore, maxScore };
 }
 
 /** Finalizes an in-progress attempt as expired if its deadline has passed.

@@ -8,8 +8,16 @@ import { eq } from "drizzle-orm";
 import * as schema from "../lib/db/schema";
 import { hashPassword } from "../lib/auth/password";
 
-const { users, testTemplates, questions, sjtQuestions, personalityItems, personalityBlocks } =
-  schema;
+const {
+  users,
+  testTemplates,
+  questions,
+  sjtQuestions,
+  personalityItems,
+  personalityBlocks,
+  reasoningPassages,
+  reasoningQuestions,
+} = schema;
 type Db = ReturnType<typeof drizzle<typeof schema>>;
 
 async function seedUser(db: Db) {
@@ -360,6 +368,387 @@ async function seedPersonality(db: Db) {
   );
 }
 
+interface ReasoningOptionSeed {
+  id: string;
+  text: string;
+}
+interface ReasoningQuestionSeed {
+  stem: string;
+  options: ReasoningOptionSeed[];
+  correctOptionId: string;
+  explanation: string;
+}
+interface NumericalPassageSeed {
+  title: string;
+  dataTable: { caption?: string; columns: string[]; rows: (string | number)[][] };
+  questions: ReasoningQuestionSeed[];
+}
+interface VerbalPassageSeed {
+  title: string;
+  body: string;
+  questions: ReasoningQuestionSeed[];
+}
+
+const TRUE_FALSE_CANNOT_SAY: ReasoningOptionSeed[] = [
+  { id: "true", text: "True" },
+  { id: "false", text: "False" },
+  { id: "cannot_say", text: "Cannot say" },
+];
+
+const numericalPassages: NumericalPassageSeed[] = [
+  {
+    title: "Quarterly Team Headcount",
+    dataTable: {
+      caption: "Headcount by team, Q1–Q4",
+      columns: ["Team", "Q1", "Q2", "Q3", "Q4"],
+      rows: [
+        ["Engineering", 42, 45, 48, 51],
+        ["Sales", 18, 20, 19, 22],
+        ["Support", 12, 12, 14, 15],
+      ],
+    },
+    questions: [
+      {
+        stem: "By how many people did the Engineering team grow from Q1 to Q4?",
+        options: [
+          { id: "a", text: "6" },
+          { id: "b", text: "9" },
+          { id: "c", text: "12" },
+          { id: "d", text: "51" },
+        ],
+        correctOptionId: "b",
+        explanation: "Engineering went from 42 in Q1 to 51 in Q4, an increase of 9 people.",
+      },
+      {
+        stem: "Which team had the largest percentage increase in headcount from Q1 to Q4?",
+        options: [
+          { id: "a", text: "Engineering" },
+          { id: "b", text: "Sales" },
+          { id: "c", text: "Support" },
+          { id: "d", text: "They are all equal" },
+        ],
+        correctOptionId: "c",
+        explanation:
+          "Support grew 25% (12 to 15), the highest of the three — Engineering grew about 21% and Sales about 22%.",
+      },
+      {
+        stem: "What was the total headcount across all three teams in Q3?",
+        options: [
+          { id: "a", text: "79" },
+          { id: "b", text: "81" },
+          { id: "c", text: "84" },
+          { id: "d", text: "88" },
+        ],
+        correctOptionId: "b",
+        explanation: "Q3 figures are 48 (Engineering) + 19 (Sales) + 14 (Support) = 81.",
+      },
+    ],
+  },
+  {
+    title: "Monthly Website Traffic",
+    dataTable: {
+      caption: "Visitors and signups by month",
+      columns: ["Month", "Visitors", "Signups"],
+      rows: [
+        ["January", 10000, 250],
+        ["February", 12000, 360],
+        ["March", 15000, 300],
+      ],
+    },
+    questions: [
+      {
+        stem: "What was the signup conversion rate in January (signups ÷ visitors)?",
+        options: [
+          { id: "a", text: "1.5%" },
+          { id: "b", text: "2.0%" },
+          { id: "c", text: "2.5%" },
+          { id: "d", text: "3.0%" },
+        ],
+        correctOptionId: "c",
+        explanation: "250 signups ÷ 10,000 visitors = 2.5%.",
+      },
+      {
+        stem: "Which month had the highest number of signups?",
+        options: [
+          { id: "a", text: "January" },
+          { id: "b", text: "February" },
+          { id: "c", text: "March" },
+          { id: "d", text: "They're equal" },
+        ],
+        correctOptionId: "b",
+        explanation: "February had 360 signups, more than January (250) or March (300).",
+      },
+      {
+        stem: "By what percentage did visitors increase from January to March?",
+        options: [
+          { id: "a", text: "25%" },
+          { id: "b", text: "40%" },
+          { id: "c", text: "50%" },
+          { id: "d", text: "60%" },
+        ],
+        correctOptionId: "c",
+        explanation: "(15,000 − 10,000) ÷ 10,000 = 50%.",
+      },
+    ],
+  },
+  {
+    title: "Product Pricing Comparison",
+    dataTable: {
+      caption: "Monthly price and included users by plan",
+      columns: ["Plan", "Monthly Price ($)", "Users Included"],
+      rows: [
+        ["Basic", 29, 5],
+        ["Pro", 99, 15],
+        ["Team", 199, 25],
+      ],
+    },
+    questions: [
+      {
+        stem: "What is the price per user for the Pro plan?",
+        options: [
+          { id: "a", text: "$5.80" },
+          { id: "b", text: "$6.60" },
+          { id: "c", text: "$7.20" },
+          { id: "d", text: "$9.90" },
+        ],
+        correctOptionId: "b",
+        explanation: "$99 ÷ 15 users = $6.60 per user.",
+      },
+      {
+        stem: "Which plan offers the lowest price per user?",
+        options: [
+          { id: "a", text: "Basic" },
+          { id: "b", text: "Pro" },
+          { id: "c", text: "Team" },
+          { id: "d", text: "They're equal" },
+        ],
+        correctOptionId: "a",
+        explanation: "Basic is $5.80/user, versus $6.60 for Pro and $7.96 for Team.",
+      },
+      {
+        stem: "How much more expensive per month is the Team plan than the Basic plan?",
+        options: [
+          { id: "a", text: "$140" },
+          { id: "b", text: "$150" },
+          { id: "c", text: "$170" },
+          { id: "d", text: "$180" },
+        ],
+        correctOptionId: "c",
+        explanation: "$199 − $29 = $170.",
+      },
+    ],
+  },
+];
+
+const verbalPassages: VerbalPassageSeed[] = [
+  {
+    title: "Expense Policy",
+    body:
+      "The company's new expense policy requires all claims over $50 to include " +
+      "a receipt and a brief justification note. Claims under $50 need only a receipt. " +
+      "Managers must approve any claim over $200 before it is submitted to finance. " +
+      "The policy does not change how travel bookings are made, which continue to go " +
+      "through the existing centralized booking tool.",
+    questions: [
+      {
+        stem: "A $40 claim requires a justification note.",
+        options: TRUE_FALSE_CANNOT_SAY,
+        correctOptionId: "false",
+        explanation:
+          "Claims under $50 need only a receipt; the justification note is only required above $50.",
+      },
+      {
+        stem: "A $250 claim must be approved by a manager before submission to finance.",
+        options: TRUE_FALSE_CANNOT_SAY,
+        correctOptionId: "true",
+        explanation:
+          "The passage states managers must approve any claim over $200 before submission, and $250 exceeds that threshold.",
+      },
+      {
+        stem: "The new policy will slow down how quickly travel bookings can be made.",
+        options: TRUE_FALSE_CANNOT_SAY,
+        correctOptionId: "cannot_say",
+        explanation:
+          "The passage says the policy doesn't change how travel bookings are made, but says nothing about booking speed either way, so this can't be determined from the passage.",
+      },
+    ],
+  },
+  {
+    title: "Remote Work Policy",
+    body:
+      "Employees may work remotely up to three days per week, provided their manager " +
+      "agrees to the schedule in advance. Teams that collaborate closely across time " +
+      "zones are expected to maintain at least four hours of overlapping availability " +
+      "each day. Remote work requests are reviewed quarterly, and a manager may ask an " +
+      "employee to return to the office more frequently if team performance metrics " +
+      "decline. The policy applies to all full-time staff; contractors are covered " +
+      "separately under their individual agreements.",
+    questions: [
+      {
+        stem: "An employee can work remotely every day of the week without approval.",
+        options: TRUE_FALSE_CANNOT_SAY,
+        correctOptionId: "false",
+        explanation:
+          "Remote work is capped at three days per week and requires the manager's advance agreement.",
+      },
+      {
+        stem: "Contractors are subject to the same remote work policy as full-time staff.",
+        options: TRUE_FALSE_CANNOT_SAY,
+        correctOptionId: "false",
+        explanation: "The passage states contractors are covered separately under their own agreements.",
+      },
+      {
+        stem: "A manager can require more in-office days if a team's performance declines.",
+        options: TRUE_FALSE_CANNOT_SAY,
+        correctOptionId: "true",
+        explanation: "This is stated directly: a manager may ask for more in-office days if metrics decline.",
+      },
+    ],
+  },
+  {
+    title: "Software Deployment Process",
+    body:
+      "All code changes must pass automated tests before merging into the main branch. " +
+      "Once merged, changes are deployed automatically to a staging environment, where " +
+      "they remain for at least 24 hours before being eligible for production release. " +
+      "Production releases require sign-off from a senior engineer who was not the " +
+      "author of the change. Emergency fixes may skip the staging wait time only with " +
+      "written approval from an engineering director.",
+    questions: [
+      {
+        stem: "Code can be deployed to production immediately after merging to main.",
+        options: TRUE_FALSE_CANNOT_SAY,
+        correctOptionId: "false",
+        explanation:
+          "Changes must sit in staging for at least 24 hours before being eligible for production, unless an emergency fix has director approval.",
+      },
+      {
+        stem: "The engineer who wrote a change can also approve its production release.",
+        options: TRUE_FALSE_CANNOT_SAY,
+        correctOptionId: "false",
+        explanation:
+          "Sign-off must come from a senior engineer who was not the author of the change.",
+      },
+      {
+        stem: "Emergency fixes are deployed faster than regular changes on average.",
+        options: TRUE_FALSE_CANNOT_SAY,
+        correctOptionId: "cannot_say",
+        explanation:
+          "The passage says emergency fixes may skip the staging wait with approval, but gives no data on actual average deployment speed, so this can't be concluded from the passage.",
+      },
+    ],
+  },
+];
+
+async function seedNumericalReasoning(db: Db) {
+  const [existing] = await db
+    .select()
+    .from(testTemplates)
+    .where(eq(testTemplates.slug, "numerical-reasoning-default"))
+    .limit(1);
+  if (existing) {
+    console.log("Default numerical reasoning template already seeded, skipping");
+    return;
+  }
+
+  await db.insert(testTemplates).values({
+    slug: "numerical-reasoning-default",
+    name: "Numerical Reasoning Test",
+    testType: "numerical_reasoning",
+    description: "Interpret small data tables and answer questions based on them.",
+    config: { durationSeconds: 15 * 60, questionCount: 9, selectionMode: "random" },
+    isDefault: true,
+  });
+
+  let questionCount = 0;
+  for (const passage of numericalPassages) {
+    await db.transaction(async (tx) => {
+      const [passageRow] = await tx
+        .insert(reasoningPassages)
+        .values({
+          testType: "numerical_reasoning",
+          title: passage.title,
+          body: "",
+          dataTable: passage.dataTable,
+        })
+        .returning({ id: reasoningPassages.id });
+
+      for (const q of passage.questions) {
+        const [question] = await tx
+          .insert(questions)
+          .values({ testType: "numerical_reasoning", stem: q.stem, tags: [passage.title] })
+          .returning({ id: questions.id });
+        await tx.insert(reasoningQuestions).values({
+          questionId: question.id,
+          passageId: passageRow.id,
+          options: q.options,
+          correctOptionId: q.correctOptionId,
+          explanation: q.explanation,
+        });
+        questionCount++;
+      }
+    });
+  }
+
+  console.log(
+    `Seeded ${numericalPassages.length} numerical reasoning passages (${questionCount} questions) and the default template`,
+  );
+}
+
+async function seedVerbalReasoning(db: Db) {
+  const [existing] = await db
+    .select()
+    .from(testTemplates)
+    .where(eq(testTemplates.slug, "verbal-reasoning-default"))
+    .limit(1);
+  if (existing) {
+    console.log("Default verbal reasoning template already seeded, skipping");
+    return;
+  }
+
+  await db.insert(testTemplates).values({
+    slug: "verbal-reasoning-default",
+    name: "Verbal Reasoning Test",
+    testType: "verbal_reasoning",
+    description: "Read a short passage, then judge statements as True, False, or Cannot Say.",
+    config: { durationSeconds: 12 * 60, questionCount: 9, selectionMode: "random" },
+    isDefault: true,
+  });
+
+  let questionCount = 0;
+  for (const passage of verbalPassages) {
+    await db.transaction(async (tx) => {
+      const [passageRow] = await tx
+        .insert(reasoningPassages)
+        .values({
+          testType: "verbal_reasoning",
+          title: passage.title,
+          body: passage.body,
+        })
+        .returning({ id: reasoningPassages.id });
+
+      for (const q of passage.questions) {
+        const [question] = await tx
+          .insert(questions)
+          .values({ testType: "verbal_reasoning", stem: q.stem, tags: [passage.title] })
+          .returning({ id: questions.id });
+        await tx.insert(reasoningQuestions).values({
+          questionId: question.id,
+          passageId: passageRow.id,
+          options: q.options,
+          correctOptionId: q.correctOptionId,
+          explanation: q.explanation,
+        });
+        questionCount++;
+      }
+    });
+  }
+
+  console.log(
+    `Seeded ${verbalPassages.length} verbal reasoning passages (${questionCount} questions) and the default template`,
+  );
+}
+
 async function main() {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error("DATABASE_URL is not set");
@@ -369,6 +758,8 @@ async function main() {
   await seedUser(db);
   await seedSjt(db);
   await seedPersonality(db);
+  await seedNumericalReasoning(db);
+  await seedVerbalReasoning(db);
 
   await pool.end();
 }

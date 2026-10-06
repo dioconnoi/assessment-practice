@@ -8,6 +8,8 @@ import {
   sjtQuestions,
   personalityItems,
   personalityBlocks,
+  reasoningQuestions,
+  reasoningPassages,
   type SjtOption,
 } from "@/lib/db/schema";
 import { getUserId } from "@/lib/auth/session";
@@ -34,7 +36,9 @@ export async function GET(
   const questionList =
     current.testType === "personality"
       ? await getPersonalityQuestions(attemptId)
-      : await getSjtQuestions(attemptId, finished);
+      : current.testType === "numerical_reasoning" || current.testType === "verbal_reasoning"
+        ? await getReasoningQuestions(attemptId, finished)
+        : await getSjtQuestions(attemptId, finished);
 
   return NextResponse.json({
     id: current.id,
@@ -131,4 +135,50 @@ async function getPersonalityQuestions(attemptId: number) {
           response: row.response,
         },
   );
+}
+
+// Options never carry answer-key data (correctOptionId/explanation live in
+// separate columns), so there's nothing to strip from them — only those
+// two fields plus isCorrect need finished-gating, unlike SJT's options.
+async function getReasoningQuestions(attemptId: number, finished: boolean) {
+  const rows = await db
+    .select({
+      attemptQuestionId: attemptQuestions.id,
+      ordinal: attemptQuestions.ordinal,
+      questionId: attemptQuestions.questionId,
+      response: attemptQuestions.response,
+      isCorrect: attemptQuestions.isCorrect,
+      stem: questions.stem,
+      options: reasoningQuestions.options,
+      correctOptionId: reasoningQuestions.correctOptionId,
+      explanation: reasoningQuestions.explanation,
+      passageId: reasoningQuestions.passageId,
+      passageTitle: reasoningPassages.title,
+      passageBody: reasoningPassages.body,
+      passageDataTable: reasoningPassages.dataTable,
+    })
+    .from(attemptQuestions)
+    .innerJoin(questions, eq(attemptQuestions.questionId, questions.id))
+    .innerJoin(reasoningQuestions, eq(reasoningQuestions.questionId, questions.id))
+    .leftJoin(reasoningPassages, eq(reasoningPassages.id, reasoningQuestions.passageId))
+    .where(eq(attemptQuestions.attemptId, attemptId))
+    .orderBy(asc(attemptQuestions.ordinal));
+
+  return rows.map((row) => ({
+    format: "reasoning" as const,
+    attemptQuestionId: row.attemptQuestionId,
+    ordinal: row.ordinal,
+    questionId: row.questionId,
+    stem: row.stem,
+    // check the FK, not passageBody's truthiness — a numerical passage can
+    // have an empty body string (all its content lives in dataTable)
+    passage: row.passageId !== null
+      ? { title: row.passageTitle, body: row.passageBody, dataTable: row.passageDataTable }
+      : null,
+    options: row.options,
+    response: row.response,
+    correctOptionId: finished ? row.correctOptionId : undefined,
+    isCorrect: finished ? row.isCorrect : undefined,
+    explanation: finished ? row.explanation : undefined,
+  }));
 }

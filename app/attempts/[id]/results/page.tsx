@@ -7,7 +7,10 @@ import {
   questions,
   sjtQuestions,
   traitScores,
+  reasoningQuestions,
+  reasoningPassages,
   type SjtOption,
+  type ReasoningOption,
 } from "@/lib/db/schema";
 import { getUserId } from "@/lib/auth/session";
 import { finalizeIfExpired } from "@/lib/attempts/finalize";
@@ -46,6 +49,8 @@ export default async function ResultsPage({
 
       {current.testType === "personality" ? (
         <PersonalityResults attemptId={attemptId} />
+      ) : current.testType === "numerical_reasoning" || current.testType === "verbal_reasoning" ? (
+        <ReasoningResults attemptId={attemptId} />
       ) : (
         <SjtResults attemptId={attemptId} />
       )}
@@ -94,6 +99,88 @@ async function SjtResults({ attemptId }: { attemptId: number }) {
               </p>
             )}
             <QuestionFeedback attemptId={attemptId} questionId={row.questionId} />
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+async function ReasoningResults({ attemptId }: { attemptId: number }) {
+  const rows = await db
+    .select({
+      questionId: attemptQuestions.questionId,
+      response: attemptQuestions.response,
+      isCorrect: attemptQuestions.isCorrect,
+      stem: questions.stem,
+      options: reasoningQuestions.options,
+      correctOptionId: reasoningQuestions.correctOptionId,
+      explanation: reasoningQuestions.explanation,
+      passageId: reasoningQuestions.passageId,
+      passageTitle: reasoningPassages.title,
+      passageBody: reasoningPassages.body,
+      passageDataTable: reasoningPassages.dataTable,
+    })
+    .from(attemptQuestions)
+    .innerJoin(questions, eq(attemptQuestions.questionId, questions.id))
+    .innerJoin(reasoningQuestions, eq(reasoningQuestions.questionId, questions.id))
+    .leftJoin(reasoningPassages, eq(reasoningPassages.id, reasoningQuestions.passageId))
+    .where(eq(attemptQuestions.attemptId, attemptId))
+    .orderBy(asc(attemptQuestions.ordinal));
+
+  return (
+    <>
+      {rows.map((row) => {
+        const options = row.options as ReasoningOption[];
+        const selected = options.find(
+          (o) => o.id === (row.response as { selectedOptionId: string } | null)?.selectedOptionId,
+        );
+        const correct = options.find((o) => o.id === row.correctOptionId);
+        return (
+          <div
+            key={row.questionId}
+            className="flex flex-col gap-2 rounded-lg border border-black/10 p-4 dark:border-white/10"
+          >
+            {row.passageId !== null && (
+              <div className="rounded-md bg-zinc-50 p-2 text-sm text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">
+                {row.passageTitle && <p className="mb-1 font-medium">{row.passageTitle}</p>}
+                {row.passageDataTable ? (
+                  <table className="w-full">
+                    <thead>
+                      <tr>
+                        {row.passageDataTable.columns.map((c) => (
+                          <th key={c} className="text-left font-medium text-zinc-500">
+                            {c}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {row.passageDataTable.rows.map((r, i) => (
+                        <tr key={i}>
+                          {r.map((cell, j) => (
+                            <td key={j}>{cell}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p>{row.passageBody}</p>
+                )}
+              </div>
+            )}
+            <p className="text-sm font-medium">{row.stem}</p>
+            <p className="text-sm">
+              Your answer: <span className="font-medium">{selected?.text ?? "No answer"}</span>{" "}
+              {row.isCorrect ? "✓" : "✗"}
+            </p>
+            {!row.isCorrect && (
+              <p className="text-sm text-zinc-500">
+                Correct answer: <span className="font-medium">{correct?.text}</span>
+              </p>
+            )}
+            <p className="rounded-md bg-zinc-50 p-3 text-sm dark:bg-zinc-900">{row.explanation}</p>
           </div>
         );
       })}
