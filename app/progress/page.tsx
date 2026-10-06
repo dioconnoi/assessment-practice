@@ -12,11 +12,16 @@ export default async function ProgressPage() {
     .where(and(eq(attempts.userId, userId!), isNotNull(attempts.submittedAt)))
     .orderBy(desc(attempts.startedAt));
 
+  // Personality attempts have no score (a trait profile, not a pass/fail
+  // result — see lib/attempts/finalize.ts), so totalScore/maxScore are
+  // null for those rows and excluded from the average rather than
+  // producing NaN.
+  const scoredRows = rows.filter((r) => r.totalScore !== null && r.maxScore !== null);
   const average =
-    rows.length === 0
+    scoredRows.length === 0
       ? null
-      : rows.reduce((sum, r) => sum + Number(r.totalScore) / Number(r.maxScore), 0) /
-        rows.length;
+      : scoredRows.reduce((sum, r) => sum + Number(r.totalScore) / Number(r.maxScore), 0) /
+        scoredRows.length;
 
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-4 p-4">
@@ -25,10 +30,12 @@ export default async function ProgressPage() {
         <p className="text-zinc-500">No completed attempts yet.</p>
       ) : (
         <>
-          <p className="text-sm text-zinc-500">
-            Average: {Math.round((average ?? 0) * 100)}% across {rows.length} attempt
-            {rows.length === 1 ? "" : "s"}
-          </p>
+          {average !== null && (
+            <p className="text-sm text-zinc-500">
+              Average: {Math.round(average * 100)}% across {scoredRows.length} scored attempt
+              {scoredRows.length === 1 ? "" : "s"}
+            </p>
+          )}
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-black/10 text-left text-zinc-500 dark:border-white/10">
@@ -44,7 +51,9 @@ export default async function ProgressPage() {
                   <td className="py-2">{new Date(r.startedAt).toLocaleString()}</td>
                   <td className="py-2">{r.testType}</td>
                   <td className="py-2">
-                    {r.totalScore} / {r.maxScore}
+                    {r.totalScore !== null && r.maxScore !== null
+                      ? `${r.totalScore} / ${r.maxScore}`
+                      : "—"}
                   </td>
                   <td className="py-2 capitalize">{r.status}</td>
                 </tr>

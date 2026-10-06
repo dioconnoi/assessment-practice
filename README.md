@@ -7,9 +7,9 @@ and SQL challenges. Formats are config-driven templates, not tied to any one
 employer; content is written to match the *style and difficulty* of real
 assessments, never reproduce them.
 
-**Status: V1 slice 1 — situational judgement, end to end.** The other four
-test types (personality, reasoning, coding, SQL) are future phases; see
-"What's not built yet" below.
+**Status: situational judgement and personality questionnaires, end to
+end.** The other three test types (reasoning, coding, SQL) are future
+phases; see "What's not built yet" below.
 
 ## Stack
 
@@ -28,14 +28,15 @@ test types (personality, reasoning, coding, SQL) are future phases; see
    (32+ random characters — `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`),
    `BOOTSTRAP_PASSWORD`, and `ANTHROPIC_API_KEY`
 4. Run migrations: `npm run db:migrate`
-5. Seed the default SJT template + question bank + your login:
-   `npm run db:seed`
+5. Seed the default templates + question banks + your login:
+   `npm run db:seed` (idempotent per template — safe to re-run after
+   pulling changes; it only inserts what's missing)
 6. `npm run dev`, then sign in at `http://localhost:3000/login` with
    `BOOTSTRAP_EMAIL` / `BOOTSTRAP_PASSWORD`
 
 Without a real `ANTHROPIC_API_KEY`, everything works except the "Show AI
-feedback" button on the results page, which fails with a clear error instead
-of crashing anything else.
+feedback" (SJT) and "Show AI summary" (personality) buttons on the results
+page, which fail with a clear error instead of crashing anything else.
 
 ## Deploying (Docker Compose + Caddy)
 
@@ -72,15 +73,36 @@ access.
   `now > server_end_at` server-side. An abandoned attempt finalizes itself
   (scored as-is, status `expired`) lazily on the next request that touches
   it — there's no background job.
-- **LLM feedback is generated once and cached** in `llm_feedback`, keyed by
-  `(attempt_question_id, feedback_type)` with a DB-level unique constraint —
-  reopening the results page never re-calls the API.
-- **Scoring is a direct SJT-specific implementation** (`lib/scoring/sjtScorer.ts`),
-  not a generic multi-type dispatcher — with only one test type built, an
-  abstraction over types that don't exist yet would be speculative. The
-  plan is for personality/reasoning/coding/SQL to each get their own scorer
-  module, with a thin dispatcher introduced once the shared shape is clear
-  from having more than one real case.
+- **LLM feedback is generated once and cached** in `llm_feedback`. SJT
+  feedback is keyed per-question (`attempt_question_id, feedback_type`);
+  the personality narrative is keyed per-attempt (`attempt_id,
+  feedback_type`, since it summarizes the whole trait profile, not one
+  question) — both via DB-level unique constraints, so reopening the
+  results page never re-calls the API either way.
+- **Scoring now has a thin dispatcher** (`lib/attempts/finalize.ts`),
+  branching on `attempts.testType` — SJT and personality each get their own
+  pure scorer (`lib/scoring/sjtScorer.ts`, `lib/scoring/personalityScorer.ts`)
+  with no shared interface/registry, since the remaining types (reasoning,
+  coding, SQL) will likely need different-enough lifecycles that a forced
+  common shape would be premature.
+- **Personality attempts have no `totalScore`/`maxScore`** — they stay
+  `null` rather than holding a completion ratio, because the type
+  deliberately has no "correct answer" concept; the real output is the
+  trait profile in `trait_scores`. `app/progress/page.tsx` filters these
+  out of its average and renders `—` for their Score column instead of
+  `null / null`.
+- **Trait profile bars are plain CSS `div`s, not a charting library** — at
+  most ~6 static, non-interactive bars didn't justify a new dependency in a
+  project that otherwise uses no UI kit; revisit if a later test type needs
+  interactive/multi-series charts.
+- **Autosave fix worth knowing about**: an earlier version debounced each
+  answer save by 400ms behind one shared timeout, which could silently drop
+  an answer if the user moved to the next question (or hit Submit) within
+  that window — a real bug, caught while building the personality flow's
+  e2e test, that also applied to SJT. Every answer here is a discrete
+  button click, so there's no good reason to debounce at all: saves now
+  fire immediately, and Submit explicitly awaits the most recent save
+  before scoring, closing the race instead of just narrowing it.
 - **No `server-only` guard on `lib/auth/password.ts`**, unlike the rest of
   `lib/`: `scripts/seed.ts` runs via `tsx` outside Next's bundler, where the
   `server-only` package's always-throw stub would fire even though nothing
@@ -91,7 +113,7 @@ access.
 
 ## What's not built yet
 
-Per the agreed build order: personality questionnaires, numerical/verbal
-reasoning, the Gemini + Groq free-tier LLM providers (behind the existing
-`LLMProvider` interface), self-hosted Judge0 for coding + SQL challenges,
-and progress-dashboard polish beyond a plain attempt history table.
+Per the agreed build order: numerical/verbal reasoning, the Gemini + Groq
+free-tier LLM providers (behind the existing `LLMProvider` interface),
+self-hosted Judge0 for coding + SQL challenges, and progress-dashboard
+polish beyond a plain attempt history table.

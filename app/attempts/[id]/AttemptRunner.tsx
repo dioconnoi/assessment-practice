@@ -4,20 +4,41 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Timer from "@/components/Timer";
 
-interface AttemptQuestion {
+interface BaseQuestion {
   attemptQuestionId: number;
   ordinal: number;
   questionId: number;
+}
+
+interface SjtQuestionView extends BaseQuestion {
+  format: "sjt";
   scenarioText: string;
   options: { id: string; text: string }[];
   response: { selectedOptionId: string } | null;
 }
 
+interface LikertQuestionView extends BaseQuestion {
+  format: "likert";
+  stem: string;
+  scaleMin: number;
+  scaleMax: number;
+  response: { kind: "likert"; value: number } | null;
+}
+
+interface ForcedChoiceQuestionView extends BaseQuestion {
+  format: "forced_choice";
+  stem: string;
+  statements: { id: string; text: string }[];
+  response: { kind: "forced_choice"; mostLikeId?: string; leastLikeId?: string } | null;
+}
+
+type AttemptQuestionView = SjtQuestionView | LikertQuestionView | ForcedChoiceQuestionView;
+
 interface AttemptData {
   id: number;
   status: string;
   serverEndAt: string;
-  questions: AttemptQuestion[];
+  questions: AttemptQuestionView[];
 }
 
 export default function AttemptRunner({ attemptId }: { attemptId: number }) {
@@ -26,10 +47,13 @@ export default function AttemptRunner({ attemptId }: { attemptId: number }) {
   const [index, setIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 0 until the mount effect below sets a real timestamp — Date.now() is an
   // impure call and can't run directly during render.
   const questionStartedAt = useRef<number>(0);
+  // Tracks the most recent answer-save request so Submit can wait for it —
+  // otherwise a click on the very last answer, immediately followed by
+  // Submit, could race the PATCH and score the attempt without it.
+  const lastSave = useRef<Promise<unknown>>(Promise.resolve());
 
   useEffect(() => {
     let cancelled = false;
@@ -58,39 +82,83 @@ export default function AttemptRunner({ attemptId }: { attemptId: number }) {
 
   const current = attempt?.questions[index];
 
-  const save = useCallback(
-    (questionId: number, selectedOptionId: string) => {
+  const postAnswer = useCallback(
+    (questionId: number, body: Record<string, unknown>) => {
       const timeSpentMs = Date.now() - questionStartedAt.current;
-      fetch(`/api/attempts/${attemptId}/questions/${questionId}`, {
+      const promise = fetch(`/api/attempts/${attemptId}/questions/${questionId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selectedOptionId, timeSpentMs }),
+        body: JSON.stringify({ ...body, timeSpentMs }),
         keepalive: true,
       }).catch(() => {
         // best-effort autosave — a transient failure here just means the
         // next save (or the final submit) carries the latest answer instead
       });
+      lastSave.current = promise;
+      return promise;
     },
     [attemptId],
   );
 
-  function selectOption(optionId: string) {
-    if (!attempt || !current) return;
-    const updated = { ...attempt };
-    updated.questions = attempt.questions.map((q, i) =>
-      i === index ? { ...q, response: { selectedOptionId: optionId } } : q,
-    );
-    setAttempt(updated);
-
-    if (saveTimeout.current) clearTimeout(saveTimeout.current);
-    saveTimeout.current = setTimeout(() => save(current.questionId, optionId), 400);
+  function updateCurrent(response: AttemptQuestionView["response"]) {
+    if (!attempt) return;
+    setAttempt({
+      ...attempt,
+      questions: attempt.questions.map((q, i) =>
+        i === index ? ({ ...q, response } as AttemptQuestionView) : q,
+      ),
+    });
   }
 
-  // flush the latest answer if the tab is hidden/closed before the debounce fires
+  // Every answer here is a discrete button click, not a text/drag input, so
+  // there's no high-frequency event stream worth debouncing — save
+  // immediately on each click. (An earlier debounced version using one
+  // shared timeout silently dropped the answer if the user moved to the
+  // next question, or submitted, within the debounce window.)
+
+  function selectOption(optionId: string) {
+    if (!current) return;
+    updateCurrent({ selectedOptionId: optionId });
+    postAnswer(current.questionId, { selectedOptionId: optionId });
+  }
+
+  function selectLikert(value: number) {
+    if (!current) return;
+    updateCurrent({ kind: "likert", value });
+    postAnswer(current.questionId, { value });
+  }
+
+  function selectForcedChoice(statementId: string, which: "most" | "least") {
+    if (!current || current.format !== "forced_choice") return;
+    const prev = current.response;
+    let mostLikeId = prev?.mostLikeId;
+    let leastLikeId = prev?.leastLikeId;
+    if (which === "most") {
+      mostLikeId = statementId;
+      if (leastLikeId === statementId) leastLikeId = undefined;
+    } else {
+      leastLikeId = statementId;
+      if (mostLikeId === statementId) mostLikeId = undefined;
+    }
+    updateCurrent({ kind: "forced_choice", mostLikeId, leastLikeId });
+    postAnswer(current.questionId, { mostLikeId, leastLikeId });
+  }
+
+  // Safety net: re-send the current answer if the tab is hidden/closed.
+  // Saves already fire immediately on click (above), so this mainly covers
+  // a save that's still in flight when the page unloads — fetch's
+  // `keepalive: true` already lets that request complete, but resending
+  // costs nothing and is simplest to reason about.
   useEffect(() => {
     function flush() {
-      if (saveTimeout.current) clearTimeout(saveTimeout.current);
-      if (current?.response) save(current.questionId, current.response.selectedOptionId);
+      if (!current?.response) return;
+      if (current.format === "sjt") postAnswer(current.questionId, current.response);
+      else if (current.format === "likert") postAnswer(current.questionId, { value: current.response.value });
+      else
+        postAnswer(current.questionId, {
+          mostLikeId: current.response.mostLikeId,
+          leastLikeId: current.response.leastLikeId,
+        });
     }
     document.addEventListener("visibilitychange", flush);
     window.addEventListener("pagehide", flush);
@@ -98,11 +166,12 @@ export default function AttemptRunner({ attemptId }: { attemptId: number }) {
       document.removeEventListener("visibilitychange", flush);
       window.removeEventListener("pagehide", flush);
     };
-  }, [current, save]);
+  }, [current, postAnswer]);
 
   async function handleSubmit() {
     setSubmitting(true);
     try {
+      await lastSave.current;
       await fetch(`/api/attempts/${attemptId}/submit`, { method: "POST" });
       router.push(`/attempts/${attemptId}/results`);
     } finally {
@@ -124,29 +193,104 @@ export default function AttemptRunner({ attemptId }: { attemptId: number }) {
         <Timer serverEndAt={attempt.serverEndAt} onExpire={handleSubmit} />
       </div>
 
-      <p className="text-base leading-relaxed">{current.scenarioText}</p>
+      {current.format === "sjt" && (
+        <>
+          <p className="text-base leading-relaxed">{current.scenarioText}</p>
+          <p className="text-sm font-medium text-zinc-500">
+            Which response would be most effective?
+          </p>
+          <div className="flex flex-col gap-2">
+            {current.options.map((option) => {
+              const selected = current.response?.selectedOptionId === option.id;
+              return (
+                <button
+                  key={option.id}
+                  onClick={() => selectOption(option.id)}
+                  className={`rounded-lg border p-3 text-left text-sm ${
+                    selected
+                      ? "border-black bg-black/5 dark:border-white dark:bg-white/10"
+                      : "border-black/10 dark:border-white/10"
+                  }`}
+                >
+                  {option.text}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
 
-      <p className="text-sm font-medium text-zinc-500">
-        Which response would be most effective?
-      </p>
-      <div className="flex flex-col gap-2">
-        {current.options.map((option) => {
-          const selected = current.response?.selectedOptionId === option.id;
-          return (
-            <button
-              key={option.id}
-              onClick={() => selectOption(option.id)}
-              className={`rounded-lg border p-3 text-left text-sm ${
-                selected
-                  ? "border-black bg-black/5 dark:border-white dark:bg-white/10"
-                  : "border-black/10 dark:border-white/10"
-              }`}
-            >
-              {option.text}
-            </button>
-          );
-        })}
-      </div>
+      {current.format === "likert" && (
+        <>
+          <p className="text-base leading-relaxed">{current.stem}</p>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-zinc-500">Disagree</span>
+            {Array.from(
+              { length: current.scaleMax - current.scaleMin + 1 },
+              (_, i) => current.scaleMin + i,
+            ).map((value) => {
+              const selected = current.response?.value === value;
+              return (
+                <button
+                  key={value}
+                  onClick={() => selectLikert(value)}
+                  aria-label={`${value}`}
+                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border text-sm ${
+                    selected
+                      ? "border-black bg-black text-white dark:border-white dark:bg-white dark:text-black"
+                      : "border-black/10 dark:border-white/10"
+                  }`}
+                >
+                  {value}
+                </button>
+              );
+            })}
+            <span className="text-xs text-zinc-500">Agree</span>
+          </div>
+        </>
+      )}
+
+      {current.format === "forced_choice" && (
+        <>
+          <p className="text-base leading-relaxed">{current.stem}</p>
+          <div className="flex flex-col gap-3">
+            {current.statements.map((statement) => {
+              const isMost = current.response?.mostLikeId === statement.id;
+              const isLeast = current.response?.leastLikeId === statement.id;
+              return (
+                <div
+                  key={statement.id}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-black/10 p-3 dark:border-white/10"
+                >
+                  <p className="flex-1 text-sm">{statement.text}</p>
+                  <div className="flex shrink-0 gap-2">
+                    <button
+                      onClick={() => selectForcedChoice(statement.id, "most")}
+                      className={`rounded-md px-2 py-1 text-xs ${
+                        isMost
+                          ? "bg-black text-white dark:bg-white dark:text-black"
+                          : "border border-black/10 dark:border-white/10"
+                      }`}
+                    >
+                      Most like me
+                    </button>
+                    <button
+                      onClick={() => selectForcedChoice(statement.id, "least")}
+                      className={`rounded-md px-2 py-1 text-xs ${
+                        isLeast
+                          ? "bg-black text-white dark:bg-white dark:text-black"
+                          : "border border-black/10 dark:border-white/10"
+                      }`}
+                    >
+                      Least like me
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       <div className="mt-auto flex items-center justify-between gap-3 border-t border-black/10 pt-4 dark:border-white/10">
         <button

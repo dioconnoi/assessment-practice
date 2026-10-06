@@ -2,14 +2,25 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { attempts, attemptQuestions } from "@/lib/db/schema";
+import { attempts, attemptQuestions, type SjtResponse, type PersonalityResponse } from "@/lib/db/schema";
 import { getUserId } from "@/lib/auth/session";
 import { finalizeIfExpired } from "@/lib/attempts/finalize";
 
-const bodySchema = z.object({
+const sjtBodySchema = z.object({
   selectedOptionId: z.string(),
   timeSpentMs: z.number().int().min(0).optional(),
 });
+
+const personalityBodySchema = z
+  .object({
+    value: z.number().int().optional(),
+    mostLikeId: z.string().optional(),
+    leastLikeId: z.string().optional(),
+    timeSpentMs: z.number().int().min(0).optional(),
+  })
+  .refine((b) => b.value !== undefined || b.mostLikeId !== undefined || b.leastLikeId !== undefined, {
+    message: "At least one of value, mostLikeId, or leastLikeId is required",
+  });
 
 export async function PATCH(
   request: Request,
@@ -32,19 +43,39 @@ export async function PATCH(
     return NextResponse.json({ error: "Attempt is no longer open" }, { status: 409 });
   }
 
-  const parsed = bodySchema.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  const body = await request.json().catch(() => null);
+  let response: SjtResponse | PersonalityResponse;
+  let timeSpentMs: number | undefined;
+
+  if (attempt.testType === "personality") {
+    const parsed = personalityBodySchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    }
+    timeSpentMs = parsed.data.timeSpentMs;
+    response =
+      parsed.data.value !== undefined
+        ? { kind: "likert", value: parsed.data.value }
+        : {
+            kind: "forced_choice",
+            mostLikeId: parsed.data.mostLikeId,
+            leastLikeId: parsed.data.leastLikeId,
+          };
+  } else {
+    const parsed = sjtBodySchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    }
+    timeSpentMs = parsed.data.timeSpentMs;
+    response = { selectedOptionId: parsed.data.selectedOptionId };
   }
 
   const result = await db
     .update(attemptQuestions)
     .set({
-      response: { selectedOptionId: parsed.data.selectedOptionId },
+      response,
       firstViewedAt: sql`coalesce(${attemptQuestions.firstViewedAt}, now())`,
-      ...(parsed.data.timeSpentMs !== undefined
-        ? { timeSpentMs: parsed.data.timeSpentMs }
-        : {}),
+      ...(timeSpentMs !== undefined ? { timeSpentMs } : {}),
     })
     .where(
       and(

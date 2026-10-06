@@ -60,6 +60,31 @@ export interface SjtResponse {
   selectedOptionId: string;
 }
 
+export interface TraitWeight {
+  trait: string;
+  /** negative = reverse-scored */
+  weight: number;
+}
+
+export interface ForcedChoiceStatement {
+  id: string;
+  text: string;
+  traits: TraitWeight[];
+}
+
+export interface LikertResponse {
+  kind: "likert";
+  value: number;
+}
+
+export interface ForcedChoiceResponse {
+  kind: "forced_choice";
+  mostLikeId?: string;
+  leastLikeId?: string;
+}
+
+export type PersonalityResponse = LikertResponse | ForcedChoiceResponse;
+
 // --- tables ---
 
 export const users = pgTable("users", {
@@ -120,6 +145,46 @@ export const sjtQuestions = pgTable("sjt_questions", {
   traitTags: text("trait_tags").array(),
 });
 
+// 1:1 child table for Likert-scale personality items. The statement text
+// lives in questions.stem — short enough to need no separate column.
+export const personalityItems = pgTable("personality_items", {
+  questionId: integer("question_id")
+    .primaryKey()
+    .references(() => questions.id, { onDelete: "cascade" }),
+  scaleMin: integer("scale_min").notNull().default(1),
+  scaleMax: integer("scale_max").notNull().default(5),
+  traits: jsonb("traits").notNull().$type<TraitWeight[]>(),
+});
+
+// 1:1 child table for forced-choice personality blocks (2-4 statements,
+// judged together — one block is one question, one screen, see
+// AttemptRunner.tsx). questions.stem holds the block instruction text.
+export const personalityBlocks = pgTable("personality_blocks", {
+  questionId: integer("question_id")
+    .primaryKey()
+    .references(() => questions.id, { onDelete: "cascade" }),
+  statements: jsonb("statements").notNull().$type<ForcedChoiceStatement[]>(),
+});
+
+// Attempt-level trait profile snapshot — not per-question, since a trait
+// pools contributions from several items/statements across the attempt.
+export const traitScores = pgTable(
+  "trait_scores",
+  {
+    id: serial("id").primaryKey(),
+    attemptId: integer("attempt_id")
+      .notNull()
+      .references(() => attempts.id, { onDelete: "cascade" }),
+    trait: varchar("trait", { length: 50 }).notNull(),
+    rawScore: numeric("raw_score", { precision: 10, scale: 4 }).notNull(),
+    normalizedScore: numeric("normalized_score", { precision: 5, scale: 2 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [uniqueIndex("trait_scores_attempt_trait_idx").on(table.attemptId, table.trait)],
+);
+
 export const attempts = pgTable(
   "attempts",
   {
@@ -167,7 +232,7 @@ export const attemptQuestions = pgTable(
     ordinal: integer("ordinal").notNull(),
     firstViewedAt: timestamp("first_viewed_at", { withTimezone: true }),
     timeSpentMs: integer("time_spent_ms").notNull().default(0),
-    response: jsonb("response").$type<SjtResponse>(),
+    response: jsonb("response").$type<SjtResponse | PersonalityResponse>(),
     isCorrect: boolean("is_correct"),
     pointsAwarded: numeric("points_awarded", { precision: 10, scale: 2 }),
   },
