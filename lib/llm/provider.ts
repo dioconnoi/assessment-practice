@@ -1,5 +1,7 @@
 import "server-only";
 import { AnthropicProvider } from "./providers/anthropic";
+import { GeminiProvider } from "./providers/gemini";
+import { GroqProvider } from "./providers/groq";
 
 export interface LLMMessage {
   role: "user" | "assistant";
@@ -25,11 +27,8 @@ export interface LLMProvider {
 
 let cachedProvider: LLMProvider | undefined;
 
-/**
- * Reads LLM_PROVIDER to pick an implementation. Only "anthropic" exists in
- * V1 — "gemini" and "groq" are added in a later phase behind this same
- * interface, so nothing above this function needs to change then.
- */
+/** Reads LLM_PROVIDER to pick an implementation: "anthropic" (default),
+ * "gemini", or "groq" — all behind the same interface above. */
 export function getLLMProvider(): LLMProvider {
   if (cachedProvider) return cachedProvider;
 
@@ -37,6 +36,12 @@ export function getLLMProvider(): LLMProvider {
   switch (providerName) {
     case "anthropic":
       cachedProvider = new AnthropicProvider();
+      break;
+    case "gemini":
+      cachedProvider = new GeminiProvider();
+      break;
+    case "groq":
+      cachedProvider = new GroqProvider();
       break;
     default:
       throw new Error(`Unknown LLM_PROVIDER: ${providerName}`);

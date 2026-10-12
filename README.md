@@ -16,8 +16,9 @@ remaining two; see "What's not built yet" below.
 - **Next.js 16** (App Router, TypeScript) — pages + API routes in one app
 - **Postgres** via **Drizzle ORM** — schema in `lib/db/schema.ts`
 - **iron-session** — single-user auth (one login, no OAuth)
-- **Anthropic API** (`@anthropic-ai/sdk`) — SJT answer feedback, behind a
-  swappable provider interface (`lib/llm/provider.ts`)
+- **LLM feedback** behind a swappable provider interface
+  (`lib/llm/provider.ts`) — Anthropic (default), Gemini, or Groq, selected
+  via `LLM_PROVIDER`
 - **Docker Compose + Caddy** — deployment, automatic HTTPS
 
 ## Running locally
@@ -26,7 +27,9 @@ remaining two; see "What's not built yet" below.
 2. Start a local Postgres (or point `DATABASE_URL` at one you already have)
 3. Copy `.env.example` to `.env` and fill in `DATABASE_URL`, `SESSION_SECRET`
    (32+ random characters — `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`),
-   `BOOTSTRAP_PASSWORD`, and `ANTHROPIC_API_KEY`
+   `BOOTSTRAP_PASSWORD`, and an API key for whichever `LLM_PROVIDER` you pick
+   (`ANTHROPIC_API_KEY` by default; `GEMINI_API_KEY`/`GROQ_API_KEY` if you
+   switch `LLM_PROVIDER`)
 4. Run migrations: `npm run db:migrate`
 5. Seed the default templates + question banks + your login:
    `npm run db:seed` (idempotent per template — safe to re-run after
@@ -34,9 +37,12 @@ remaining two; see "What's not built yet" below.
 6. `npm run dev`, then sign in at `http://localhost:3000/login` with
    `BOOTSTRAP_EMAIL` / `BOOTSTRAP_PASSWORD`
 
-Without a real `ANTHROPIC_API_KEY`, everything works except the "Show AI
-feedback" (SJT) and "Show AI summary" (personality) buttons on the results
-page, which fail with a clear error instead of crashing anything else.
+Without a real API key for whichever provider is configured, everything
+works except the "Show AI feedback" (SJT) and "Show AI summary"
+(personality) buttons on the results page, which fail with a clear error
+instead of crashing anything else — verified for all three providers
+(Anthropic, Gemini, Groq) by swapping `LLM_PROVIDER` with a placeholder key
+and confirming a clean 502 rather than a crash.
 
 ## Deploying (Docker Compose + Caddy)
 
@@ -128,9 +134,32 @@ access.
   dropped every numerical passage. Fixed by checking the actual FK
   (`passageId !== null`) instead of inferring presence from content.
 
+- **Gemini/Groq providers were verified against their own shipped
+  TypeScript types, not official docs.** `ai.google.dev` and
+  `console.groq.com` were unreachable from this build environment's
+  network, so instead of guessing REST shapes from training-data memory,
+  each provider's real npm package was installed and its `.d.ts` files
+  read directly to confirm method names and field names — the same
+  technique already used in this project to handle Next.js 16's API
+  changes and iron-session's API. Two concrete things that approach caught:
+  Gemini's content role is `"user" | "model"`, not `"assistant"` like
+  `LLMRequest` uses (the SDK types it as a bare `string`, so a wrong value
+  wouldn't be a compile error); and Groq's `max_tokens` field is
+  `@deprecated` in its own types in favor of `max_completion_tokens`. Live
+  verification was also asymmetric in an interesting way: Gemini's real API
+  domain (`generativelanguage.googleapis.com`) is reachable from this build
+  environment, so a placeholder key produced a genuine "API key not valid"
+  response from Google's servers; Groq's (`api.groq.com`) is not reachable
+  from here (DNS failure), so Groq's wiring was only confirmed by a clean
+  `npm run build`/typecheck against the real SDK types plus the request
+  correctly attempting the right hostname — not a live round trip. Both
+  free-tier model defaults (`gemini-flash-latest`, `llama-3.1-8b-instant`)
+  are best-effort, grounded in each SDK's own current examples/model-id
+  types rather than confirmed pricing pages, and should be reconfirmed
+  against each platform's current free tier before relying on them.
+
 ## What's not built yet
 
-Per the agreed build order: the Gemini + Groq free-tier LLM providers
-(behind the existing `LLMProvider` interface), self-hosted Judge0 for
-coding + SQL challenges, and progress-dashboard polish beyond a plain
-attempt history table.
+Per the agreed build order: self-hosted Judge0 for coding + SQL
+challenges, and progress-dashboard polish beyond a plain attempt history
+table.
